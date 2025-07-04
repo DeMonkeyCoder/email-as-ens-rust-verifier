@@ -1,7 +1,10 @@
-use alloy_primitives::{Address, B256, U256};
-
 // Constants matching Verifier.sol
-const Q: U256 = U256::from_limbs([0x43e1f593f0000001, 0x2833e84879b97091, 0xb85045b68181585d, 0x30644e72e131a029]);
+const Q: [u8; 32] = [
+    0x30, 0x64, 0x4e, 0x72, 0xe1, 0x31, 0xa0, 0x29,
+    0xb8, 0x50, 0x45, 0xb6, 0x81, 0x81, 0x58, 0x5d,
+    0x28, 0x33, 0xe8, 0x48, 0x79, 0xb9, 0x70, 0x91,
+    0x43, 0xe1, 0xf5, 0x93, 0xf0, 0x00, 0x00, 0x01,
+];
 const DOMAIN_FIELDS: usize = 9;
 const DOMAIN_BYTES: usize = 255;
 const EMAIL_FIELDS: usize = 9;
@@ -16,11 +19,11 @@ pub struct ProveAndClaimCommand {
     pub domain: String,
     pub email: String,
     pub email_parts: Vec<String>,
-    pub owner: Address,
-    pub dkim_signer_hash: B256,
-    pub nullifier: B256,
-    pub timestamp: U256,
-    pub account_salt: B256,
+    pub owner: String,
+    pub dkim_signer_hash: [u8; 32],
+    pub nullifier: [u8; 32],
+    pub timestamp: [u8; 32],
+    pub account_salt: [u8; 32],
     pub is_code_embedded: bool,
     pub miscellaneous_data: Vec<u8>,
     pub proof: Vec<u8>,
@@ -29,19 +32,19 @@ pub struct ProveAndClaimCommand {
 /// Struct to hold decoded proof components.
 #[derive(Debug)]
 struct Proof {
-    p_a: [U256; 2],
-    p_b: [[U256; 2]; 2],
-    p_c: [U256; 2],
+    p_a: [[u8; 32]; 2],
+    p_b: [[[u8; 32]; 2]; 2],
+    p_c: [[u8; 32]; 2],
 }
 
 /// Trait representing the Groth16 verifier interface.
 pub trait Groth16Verifier {
     fn verify_proof(
         &self,
-        p_a: [U256; 2],
-        p_b: [[U256; 2]; 2],
-        p_c: [U256; 2],
-        pub_signals: [U256; 60],
+        p_a: [[u8; 32]; 2],
+        p_b: [[[u8; 32]; 2]; 2],
+        p_c: [[u8; 32]; 2],
+        pub_signals: [[u8; 32]; 60],
     ) -> bool;
 }
 
@@ -57,14 +60,14 @@ impl<V: Groth16Verifier> ProveAndClaimCommandVerifier<V> {
     }
 
     /// Validates a proof and extracts a ProveAndClaimCommand from public signals.
-    pub fn verify_and_extract(&self, proof_bytes: &[u8], pub_signals: [U256; 60]) -> Result<ProveAndClaimCommand, String> {
+    pub fn verify_and_extract(&self, proof_bytes: &[u8], pub_signals: [[u8; 32]; 60]) -> Result<ProveAndClaimCommand, String> {
         // Decode the proof
         let proof = decode_proof(proof_bytes)?;
 
         // Check if all proof elements are less than Q
-        if !proof.p_a.iter().all(|&x| x < Q) ||
-           !proof.p_b.iter().flatten().all(|&x| x < Q) ||
-           !proof.p_c.iter().all(|&x| x < Q) {
+        if !proof.p_a.iter().all(|x| is_less_than_q(x)) ||
+           !proof.p_b.iter().flatten().all(|x| is_less_than_q(x)) ||
+           !proof.p_c.iter().all(|x| is_less_than_q(x)) {
             return Err("Proof elements exceed curve order".to_string());
         }
 
@@ -77,17 +80,17 @@ impl<V: Groth16Verifier> ProveAndClaimCommandVerifier<V> {
         let mut index = 0;
 
         // Domain name (9 fields)
-        let domain_fields: [U256; DOMAIN_FIELDS] = pub_signals[index..index + DOMAIN_FIELDS].try_into().unwrap();
+        let domain_fields: [[u8; 32]; 9] = pub_signals[index..index + DOMAIN_FIELDS].try_into().unwrap();
         let domain_bytes = unpack_fields_to_bytes(&domain_fields, DOMAIN_BYTES)?;
         let domain = String::from_utf8(domain_bytes).map_err(|_| "Invalid domain encoding".to_string())?;
         index += DOMAIN_FIELDS;
 
         // Public key hash (1 field)
-        let dkim_signer_hash = B256::from_slice(&pub_signals[index].to_be_bytes::<32>());
+        let dkim_signer_hash = pub_signals[index];
         index += 1;
 
         // Email nullifier (1 field)
-        let nullifier = B256::from_slice(&pub_signals[index].to_be_bytes::<32>());
+        let nullifier = pub_signals[index];
         index += 1;
 
         // Timestamp (1 field)
@@ -95,29 +98,29 @@ impl<V: Groth16Verifier> ProveAndClaimCommandVerifier<V> {
         index += 1;
 
         // Masked command (20 fields)
-        let command_fields: [U256; COMMAND_FIELDS] = pub_signals[index..index + COMMAND_FIELDS].try_into().unwrap();
+        let command_fields: [[u8; 32]; 20] = pub_signals[index..index + COMMAND_FIELDS].try_into().unwrap();
         let command_bytes = unpack_fields_to_bytes(&command_fields, COMMAND_BYTES)?;
         let command_str = String::from_utf8(command_bytes).map_err(|_| "Invalid command encoding".to_string())?;
         index += COMMAND_FIELDS;
 
         // Account salt (1 field)
-        let account_salt = B256::from_slice(&pub_signals[index].to_be_bytes::<32>());
+        let account_salt = pub_signals[index];
         index += 1;
 
         // Is code embedded (1 field)
-        let is_code_embedded = pub_signals[index] != U256::from(0);
+        let is_code_embedded = !pub_signals[index].iter().all(|&b| b == 0);
         index += 1;
 
         // Pubkey (17 fields)
-        let pubkey: [U256; PUBKEY_FIELDS] = pub_signals[index..index + PUBKEY_FIELDS].try_into().unwrap();
+        let pubkey: [[u8; 32]; 17] = pub_signals[index..index + PUBKEY_FIELDS].try_into().unwrap();
         let mut miscellaneous_data = Vec::with_capacity(PUBKEY_FIELDS * 32);
         for &field in &pubkey {
-            miscellaneous_data.extend_from_slice(&field.to_be_bytes::<32>());
+            miscellaneous_data.extend_from_slice(&field);
         }
         index += PUBKEY_FIELDS;
 
         // Email address (9 fields)
-        let email_fields: [U256; EMAIL_FIELDS] = pub_signals[index..index + EMAIL_FIELDS].try_into().unwrap();
+        let email_fields: [[u8; 32]; 9] = pub_signals[index..index + EMAIL_FIELDS].try_into().unwrap();
         let email_bytes = unpack_fields_to_bytes(&email_fields, EMAIL_BYTES)?;
         let email = String::from_utf8(email_bytes).map_err(|_| "Invalid email encoding".to_string())?;
 
@@ -143,8 +146,16 @@ impl<V: Groth16Verifier> ProveAndClaimCommandVerifier<V> {
     }
 }
 
-fn bytes_to_u256(bytes: [u8; 32]) -> U256 {
-    U256::from_be_bytes(bytes)
+/// Compares a 256-bit value (as bytes) to Q for less-than check.
+fn is_less_than_q(value: &[u8; 32]) -> bool {
+    for i in 0..32 {
+        if value[i] < Q[i] {
+            return true;
+        } else if value[i] > Q[i] {
+            return false;
+        }
+    }
+    false // Equal to Q is not less than
 }
 
 /// Decodes the proof bytes into pA, pB, and pC components.
@@ -154,37 +165,37 @@ fn decode_proof(proof_bytes: &[u8]) -> Result<Proof, String> {
     }
     let mut offset = 0;
     let p_a = [
-        bytes_to_u256(proof_bytes[offset..offset + 32].try_into().unwrap()),
-        bytes_to_u256(proof_bytes[offset + 32..offset + 64].try_into().unwrap()),
+        proof_bytes[offset..offset + 32].try_into().unwrap(),
+        proof_bytes[offset + 32..offset + 64].try_into().unwrap(),
     ];
     offset += 64;
     let p_b = [
         [
-            bytes_to_u256(proof_bytes[offset..offset + 32].try_into().unwrap()),
-            bytes_to_u256(proof_bytes[offset + 32..offset + 64].try_into().unwrap()),
+            proof_bytes[offset..offset + 32].try_into().unwrap(),
+            proof_bytes[offset + 32..offset + 64].try_into().unwrap(),
         ],
         [
-            bytes_to_u256(proof_bytes[offset + 64..offset + 96].try_into().unwrap()),
-            bytes_to_u256(proof_bytes[offset + 96..offset + 128].try_into().unwrap()),
+            proof_bytes[offset + 64..offset + 96].try_into().unwrap(),
+            proof_bytes[offset + 96..offset + 128].try_into().unwrap(),
         ],
     ];
     offset += 128;
     let p_c = [
-        bytes_to_u256(proof_bytes[offset..offset + 32].try_into().unwrap()),
-        bytes_to_u256(proof_bytes[offset + 32..offset + 64].try_into().unwrap()),
+        proof_bytes[offset..offset + 32].try_into().unwrap(),
+        proof_bytes[offset + 32..offset + 64].try_into().unwrap(),
     ];
     Ok(Proof { p_a, p_b, p_c })
 }
 
 /// Unpacks field elements into bytes, matching the encoding from TestFixtures.sol.
-fn unpack_fields_to_bytes(fields: &[U256], padded_size: usize) -> Result<Vec<u8>, String> {
+fn unpack_fields_to_bytes(fields: &[[u8; 32]], padded_size: usize) -> Result<Vec<u8>, String> {
     let num_fields = (padded_size + 30) / 31;
     if fields.len() != num_fields {
         return Err(format!("Invalid number of fields: expected {}, got {}", num_fields, fields.len()));
     }
     let mut all_bytes = Vec::new();
     for &field in fields {
-        let bytes = field.to_be_bytes::<32>(); // Big-endian representation
+        let bytes = field; // Already in big-endian form
         // Find the first and last non-zero byte indices
         let first_non_zero = bytes.iter().position(|&b| b != 0);
         let last_non_zero = bytes.iter().rposition(|&b| b != 0);
@@ -204,30 +215,30 @@ fn unpack_fields_to_bytes(fields: &[U256], padded_size: usize) -> Result<Vec<u8>
 }
 
 /// Extracts the owner address from the command string.
-fn extract_owner_from_command(command: &str) -> Result<Address, String> {
+fn extract_owner_from_command(command: &str) -> Result<String, String> {
     let prefix = "Claim ENS name for address ";
     if !command.starts_with(prefix) {
         return Err("Invalid command format".to_string());
     }
     let addr_str = command.strip_prefix(prefix).ok_or("Failed to strip prefix".to_string())?;
-    addr_str.parse::<Address>().map_err(|_| "Invalid address format".to_string())
+    Ok(addr_str.to_string())
 }
 
 // Test module
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::{address, b256};
+    use alloy_primitives::{b256, U256};
 
     /// Mock implementation of Groth16Verifier that always returns true for simplicity.
     struct MockGroth16Verifier;
     impl Groth16Verifier for MockGroth16Verifier {
         fn verify_proof(
             &self,
-            _p_a: [U256; 2],
-            _p_b: [[U256; 2]; 2],
-            _p_c: [U256; 2],
-            _pub_signals: [U256; 60],
+            _p_a: [[u8; 32]; 2],
+            _p_b: [[[u8; 32]; 2]; 2],
+            _p_c: [[u8; 32]; 2],
+            _pub_signals: [[u8; 32]; 60],
         ) -> bool {
             true
         }
@@ -236,7 +247,8 @@ mod tests {
     #[test]
     fn test_field_to_ascii_gmail() {
         let field_value = "2018721414038404820327".parse::<U256>().unwrap();
-        let fields = [field_value];
+        let bytes = field_value.to_be_bytes::<32>();
+        let fields = [bytes];
         let bytes = unpack_fields_to_bytes(&fields, 9).unwrap();
         let result = String::from_utf8_lossy(&bytes).to_string();
         assert_eq!(result, "gmail.com");
@@ -244,107 +256,107 @@ mod tests {
 
     #[test]
     fn test_verify_and_extract_testfixtures() {
-        let pub_signals: [U256; 60] = [
-            "2018721414038404820327".parse::<U256>().unwrap(),
-            U256::from(0),
-            U256::from(0),
-            U256::from(0),
-            U256::from(0),
-            U256::from(0),
-            U256::from(0),
-            U256::from(0),
-            U256::from(0),
-            "6632353713085157925504008443078919716322386156160602218536961028046468237192".parse::<U256>().unwrap(),
-            "4554837866351681469140157310807394956517436905901938745944947421127000894884".parse::<U256>().unwrap(),
-            U256::from(0),
-            "180891110264973503160226225538030206223858091522603795023666265748100181059".parse::<U256>().unwrap(),
-            "173532502901810909445165194544006900992761359126983071590425318149531518018".parse::<U256>().unwrap(),
-            "13582551733188164".parse::<U256>().unwrap(),
-            U256::from(0),
-            U256::from(0),
-            U256::from(0),
-            U256::from(0),
-            U256::from(0),
-            U256::from(0),
-            U256::from(0),
-            U256::from(0),
-            U256::from(0),
-            U256::from(0),
-            U256::from(0),
-            U256::from(0),
-            U256::from(0),
-            U256::from(0),
-            U256::from(0),
-            U256::from(0),
-            U256::from(0),
-            "6462823065239948963336625999299932081772838850050016167388148022706945490790".parse::<U256>().unwrap(),
-            U256::from(0),
-            "2107195391459410975264579855291297887".parse::<U256>().unwrap(),
-            "2562632063603354817278035230349645235".parse::<U256>().unwrap(),
-            "1868388447387859563289339873373526818".parse::<U256>().unwrap(),
-            "2159353473203648408714805618210333973".parse::<U256>().unwrap(),
-            "351789365378952303483249084740952389".parse::<U256>().unwrap(),
-            "659717315519250910761248850885776286".parse::<U256>().unwrap(),
-            "1321773785542335225811636767147612036".parse::<U256>().unwrap(),
-            "258646249156909342262859240016844424".parse::<U256>().unwrap(),
-            "644872192691135519287736182201377504".parse::<U256>().unwrap(),
-            "174898460680981733302111356557122107".parse::<U256>().unwrap(),
-            "1068744134187917319695255728151595132".parse::<U256>().unwrap(),
-            "1870792114609696396265442109963534232".parse::<U256>().unwrap(),
-            "8288818605536063568933922407756344".parse::<U256>().unwrap(),
-            "1446710439657393605686016190803199177".parse::<U256>().unwrap(),
-            "2256068140678002554491951090436701670".parse::<U256>().unwrap(),
-            "518946826903468667178458656376730744".parse::<U256>().unwrap(),
-            "3222036726675473160989497427257757".parse::<U256>().unwrap(),
-            "9533142343906178599764761233821773221685364".parse::<U256>().unwrap(),
-            U256::from(0),
-            U256::from(0),
-            U256::from(0),
-            U256::from(0),
-            U256::from(0),
-            U256::from(0),
-            U256::from(0),
-            U256::from(0),
+        let pub_signals: [[u8; 32]; 60] = [
+            "2018721414038404820327".parse::<U256>().unwrap().to_be_bytes::<32>(),
+            U256::from(0).to_be_bytes::<32>(),
+            U256::from(0).to_be_bytes::<32>(),
+            U256::from(0).to_be_bytes::<32>(),
+            U256::from(0).to_be_bytes::<32>(),
+            U256::from(0).to_be_bytes::<32>(),
+            U256::from(0).to_be_bytes::<32>(),
+            U256::from(0).to_be_bytes::<32>(),
+            U256::from(0).to_be_bytes::<32>(),
+            "6632353713085157925504008443078919716322386156160602218536961028046468237192".parse::<U256>().unwrap().to_be_bytes::<32>(),
+            "4554837866351681469140157310807394956517436905901938745944947421127000894884".parse::<U256>().unwrap().to_be_bytes::<32>(),
+            U256::from(0).to_be_bytes::<32>(),
+            "180891110264973503160226225538030206223858091522603795023666265748100181059".parse::<U256>().unwrap().to_be_bytes::<32>(),
+            "173532502901810909445165194544006900992761359126983071590425318149531518018".parse::<U256>().unwrap().to_be_bytes::<32>(),
+            "13582551733188164".parse::<U256>().unwrap().to_be_bytes::<32>(),
+            U256::from(0).to_be_bytes::<32>(),
+            U256::from(0).to_be_bytes::<32>(),
+            U256::from(0).to_be_bytes::<32>(),
+            U256::from(0).to_be_bytes::<32>(),
+            U256::from(0).to_be_bytes::<32>(),
+            U256::from(0).to_be_bytes::<32>(),
+            U256::from(0).to_be_bytes::<32>(),
+            U256::from(0).to_be_bytes::<32>(),
+            U256::from(0).to_be_bytes::<32>(),
+            U256::from(0).to_be_bytes::<32>(),
+            U256::from(0).to_be_bytes::<32>(),
+            U256::from(0).to_be_bytes::<32>(),
+            U256::from(0).to_be_bytes::<32>(),
+            U256::from(0).to_be_bytes::<32>(),
+            U256::from(0).to_be_bytes::<32>(),
+            U256::from(0).to_be_bytes::<32>(),
+            U256::from(0).to_be_bytes::<32>(),
+            "6462823065239948963336625999299932081772838850050016167388148022706945490790".parse::<U256>().unwrap().to_be_bytes::<32>(),
+            U256::from(0).to_be_bytes::<32>(),
+            "2107195391459410975264579855291297887".parse::<U256>().unwrap().to_be_bytes::<32>(),
+            "2562632063603354817278035230349645235".parse::<U256>().unwrap().to_be_bytes::<32>(),
+            "1868388447387859563289339873373526818".parse::<U256>().unwrap().to_be_bytes::<32>(),
+            "2159353473203648408714805618210333973".parse::<U256>().unwrap().to_be_bytes::<32>(),
+            "351789365378952303483249084740952389".parse::<U256>().unwrap().to_be_bytes::<32>(),
+            "659717315519250910761248850885776286".parse::<U256>().unwrap().to_be_bytes::<32>(),
+            "1321773785542335225811636767147612036".parse::<U256>().unwrap().to_be_bytes::<32>(),
+            "258646249156909342262859240016844424".parse::<U256>().unwrap().to_be_bytes::<32>(),
+            "644872192691135519287736182201377504".parse::<U256>().unwrap().to_be_bytes::<32>(),
+            "174898460680981733302111356557122107".parse::<U256>().unwrap().to_be_bytes::<32>(),
+            "1068744134187917319695255728151595132".parse::<U256>().unwrap().to_be_bytes::<32>(),
+            "1870792114609696396265442109963534232".parse::<U256>().unwrap().to_be_bytes::<32>(),
+            "8288818605536063568933922407756344".parse::<U256>().unwrap().to_be_bytes::<32>(),
+            "1446710439657393605686016190803199177".parse::<U256>().unwrap().to_be_bytes::<32>(),
+            "2256068140678002554491951090436701670".parse::<U256>().unwrap().to_be_bytes::<32>(),
+            "518946826903468667178458656376730744".parse::<U256>().unwrap().to_be_bytes::<32>(),
+            "3222036726675473160989497427257757".parse::<U256>().unwrap().to_be_bytes::<32>(),
+            "9533142343906178599764761233821773221685364".parse::<U256>().unwrap().to_be_bytes::<32>(),
+            U256::from(0).to_be_bytes::<32>(),
+            U256::from(0).to_be_bytes::<32>(),
+            U256::from(0).to_be_bytes::<32>(),
+            U256::from(0).to_be_bytes::<32>(),
+            U256::from(0).to_be_bytes::<32>(),
+            U256::from(0).to_be_bytes::<32>(),
+            U256::from(0).to_be_bytes::<32>(),
+            U256::from(0).to_be_bytes::<32>(),
         ];
 
         let p_a = [
-            U256::from_str_radix("03e1490fc469798ca99a36702a322ccc8227cc3595058d0aac83aea22fbb2ccf", 16).unwrap(),
-            U256::from_str_radix("2551cd0add70fe3900b05e2dd03b7ba5102ddb63e1b4003ec839a537c6453cfc", 16).unwrap(),
+            U256::from_str_radix("03e1490fc469798ca99a36702a322ccc8227cc3595058d0aac83aea22fbb2ccf", 16).unwrap().to_be_bytes::<32>(),
+            U256::from_str_radix("2551cd0add70fe3900b05e2dd03b7ba5102ddb63e1b4003ec839a537c6453cfc", 16).unwrap().to_be_bytes::<32>(),
         ];
         let p_b = [
             [
-                U256::from_str_radix("25c35e8d24d948a808a1ea128831cd54ce4a3532a40ab136dc81bbf0b2635c24", 16).unwrap(),
-                U256::from_str_radix("2e0054eaf867ca03c0f3668b7f17d3bf01b3d7f00bcadb774a74058f81273c97", 16).unwrap(),
+                U256::from_str_radix("25c35e8d24d948a808a1ea128831cd54ce4a3532a40ab136dc81bbf0b2635c24", 16).unwrap().to_be_bytes::<32>(),
+                U256::from_str_radix("2e0054eaf867ca03c0f3668b7f17d3bf01b3d7f00bcadb774a74058f81273c97", 16).unwrap().to_be_bytes::<32>(),
             ],
             [
-                U256::from_str_radix("144542d4082a8fadc1c55a24698522916f1717791bf1e1f115fb183c62a507da", 16).unwrap(),
-                U256::from_str_radix("2dc6e057e138dd1b7c10c1be1f99261b826cd4fcf081ae5a90885aab3358dca4", 16).unwrap(),
+                U256::from_str_radix("144542d4082a8fadc1c55a24698522916f1717791bf1e1f115fb183c62a507da", 16).unwrap().to_be_bytes::<32>(),
+                U256::from_str_radix("2dc6e057e138dd1b7c10c1be1f99261b826cd4fcf081ae5a90885aab3358dca4", 16).unwrap().to_be_bytes::<32>(),
             ],
         ];
         let p_c = [
-            U256::from_str_radix("2ef0d8f5b88cdc952bcf26adeaa6a30176584496df21bd21fbc997432172c9e7", 16).unwrap(),
-            U256::from_str_radix("24b4201c52b7eec75377b727ac0fe51049d534bac7918175096596fa351862c1", 16).unwrap(),
+            U256::from_str_radix("2ef0d8f5b88cdc952bcf26adeaa6a30176584496df21bd21fbc997432172c9e7", 16).unwrap().to_be_bytes::<32>(),
+            U256::from_str_radix("24b4201c52b7eec75377b727ac0fe51049d534bac7918175096596fa351862c1", 16).unwrap().to_be_bytes::<32>(),
         ];
 
         let mut proof_bytes = Vec::new();
-        proof_bytes.extend(p_a[0].to_be_bytes::<32>());
-        proof_bytes.extend(p_a[1].to_be_bytes::<32>());
-        proof_bytes.extend(p_b[0][0].to_be_bytes::<32>());
-        proof_bytes.extend(p_b[0][1].to_be_bytes::<32>());
-        proof_bytes.extend(p_b[1][0].to_be_bytes::<32>());
-        proof_bytes.extend(p_b[1][1].to_be_bytes::<32>());
-        proof_bytes.extend(p_c[0].to_be_bytes::<32>());
-        proof_bytes.extend(p_c[1].to_be_bytes::<32>());
+        proof_bytes.extend(p_a[0]);
+        proof_bytes.extend(p_a[1]);
+        proof_bytes.extend(p_b[0][0]);
+        proof_bytes.extend(p_b[0][1]);
+        proof_bytes.extend(p_b[1][0]);
+        proof_bytes.extend(p_b[1][1]);
+        proof_bytes.extend(p_c[0]);
+        proof_bytes.extend(p_c[1]);
 
         let expected_command = ProveAndClaimCommand {
             domain: "gmail.com".to_string(),
             email: "thezdev3@gmail.com".to_string(),
             email_parts: vec!["thezdev3$gmail".to_string(), "com".to_string()],
-            owner: address!("afBD210c60dD651892a61804A989eEF7bD63CBA0"),
-            dkim_signer_hash: b256!("0ea9c777dc7110e5a9e89b13f0cfc540e3845ba120b2b6dc24024d61488d4788"),
-            nullifier: b256!("0A11F2664AE4F7E3A9C3BA43394B01347FD5B76FC0A7FDB09D91324DA1F6ADA4"),
-            timestamp: U256::from(0),
-            account_salt: b256!("0E49D406A4D84DA7DB65C161EB11D06E8C52F1C0EDD91BC557E4F23FF01D7F66"),
+            owner: "0xafBD210c60dD651892a61804A989eEF7bD63CBA0".to_string(),
+            dkim_signer_hash: b256!("0ea9c777dc7110e5a9e89b13f0cfc540e3845ba120b2b6dc24024d61488d4788").into(),
+            nullifier: b256!("0A11F2664AE4F7E3A9C3BA43394B01347FD5B76FC0A7FDB09D91324DA1F6ADA4").into(),
+            timestamp: U256::from(0).to_be_bytes::<32>(),
+            account_salt: b256!("0E49D406A4D84DA7DB65C161EB11D06E8C52F1C0EDD91BC557E4F23FF01D7F66").into(),
             is_code_embedded: false,
             miscellaneous_data: vec![0u8; 17 * 32], // Will be populated from pub_signals
             proof: proof_bytes.clone(),
